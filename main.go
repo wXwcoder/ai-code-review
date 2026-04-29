@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"git-svn-reviewbot/internal/config"
 	"git-svn-reviewbot/internal/controller"
 	"git-svn-reviewbot/internal/service"
@@ -19,7 +20,15 @@ import (
 //go:embed dist/*
 var embeddedFS embed.FS
 
+var VERSION string
+
 func main() {
+	// 检查命令行参数
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println("版本号: " + VERSION)
+		os.Exit(0)
+	}
+	fmt.Println("版本号: " + VERSION)
 	// 配置日志
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -28,6 +37,8 @@ func main() {
 
 	// 加载配置
 	cfg := config.Load()
+
+	slog.Info("cfg:%+v", cfg)
 
 	// 初始化存储
 	fileStorage := storage.NewFileStorage(cfg.SVN.Path)

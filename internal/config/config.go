@@ -32,9 +32,10 @@ type GitLabConfig struct {
 
 // SVNConfig SVN 配置
 type SVNConfig struct {
-	BaseURL string
-	Keyword string
-	Path    string
+	BaseURL     string
+	Keyword     string
+	SkipKeyword string
+	Path        string
 }
 
 // OllamaConfig Ollama 配置
@@ -57,7 +58,8 @@ type LLMConfig struct {
 
 // ReviewConfig 审查配置
 type ReviewConfig struct {
-	Prompt string
+	Prompt    string
+	PassScore int
 }
 
 // Load 加载配置
@@ -70,6 +72,7 @@ func Load() *Config {
 	viper.SetDefault("GITLAB_BASE_URL", "http://localhost:8929")
 	viper.SetDefault("SVN_BASE_URL", "svn://localhost:3690")
 	viper.SetDefault("SVN_KEYWORD", "[review]")
+	viper.SetDefault("SKIP_KEYWORD", "[skip-review]")
 	viper.SetDefault("SVN_PATH", "./reviews")
 	viper.SetDefault("OLLAMA_BASE_URL", "http://localhost:11434")
 	viper.SetDefault("OLLAMA_MODEL", "llama3")
@@ -77,6 +80,7 @@ func Load() *Config {
 	viper.SetDefault("DEEPSEEK_MODEL", "deepseek-v4-flash")
 	viper.SetDefault("LLM_BACKEND", "ollama") // 默认使用 Ollama
 	viper.SetDefault("REVIEW_PROMPT", getDefaultPrompt())
+	viper.SetDefault("REVIEW_PASS_SCORE", 6)
 
 	// 确保 reviews 目录存在
 	storagePath := viper.GetString("SVN_PATH")
@@ -94,9 +98,10 @@ func Load() *Config {
 			PrivateToken: viper.GetString("GITLAB_PRIVATE_TOKEN"),
 		},
 		SVN: SVNConfig{
-			BaseURL: viper.GetString("SVN_BASE_URL"),
-			Keyword: viper.GetString("SVN_KEYWORD"),
-			Path:    viper.GetString("SVN_PATH"),
+			BaseURL:     viper.GetString("SVN_BASE_URL"),
+			Keyword:     viper.GetString("SVN_KEYWORD"),
+			SkipKeyword: viper.GetString("SKIP_KEYWORD"),
+			Path:        viper.GetString("SVN_PATH"),
 		},
 		Ollama: OllamaConfig{
 			BaseURL: viper.GetString("OLLAMA_BASE_URL"),
@@ -111,7 +116,8 @@ func Load() *Config {
 			Backend: viper.GetString("LLM_BACKEND"),
 		},
 		Review: ReviewConfig{
-			Prompt: viper.GetString("REVIEW_PROMPT"),
+			Prompt:    viper.GetString("REVIEW_PROMPT"),
+			PassScore: viper.GetInt("REVIEW_PASS_SCORE"),
 		},
 	}
 }
@@ -137,9 +143,9 @@ func getDefaultPrompt() string {
 评分规则：
 - 10 分：完美，没有任何问题
 - 8-9 分：优秀，只有很小的改进空间
-- 6-7 分：合格，有一些问题但可以接受
-- 4-5 分：较差，有明显问题需要修改
-- 0-3 分：极差，必须重写
+- 6-7 分：合格，仅有轻微问题，不影响功能
+- 0-5 分：存在代码错误、逻辑问题或安全漏洞，必须修改
+【重要】只要发现代码错误（包括但不限于：语法错误、逻辑错误、潜在 bug、安全漏洞），评分不得超过5分！
 
 评分后再给出详细的 Markdown 格式审查报告。`
 }

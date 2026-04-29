@@ -21,7 +21,10 @@ type SvnController struct {
 	storage           *storage.FileStorage
 	codeReviewService *service.CodeReviewService
 	keyword           string
+	skipKeyword       string
 	baseURL           string
+	serverPort        string
+	passScore         int
 }
 
 // NewSvnController 创建新的 SVN 控制器
@@ -31,7 +34,10 @@ func NewSvnController(svnService *service.SvnService, storage *storage.FileStora
 		storage:           storage,
 		codeReviewService: codeReviewService,
 		keyword:           cfg.SVN.Keyword,
+		skipKeyword:       cfg.SVN.SkipKeyword,
 		baseURL:           cfg.Server.BaseURL,
+		serverPort:        cfg.Server.Port,
+		passScore:         cfg.Review.PassScore,
 	}
 }
 
@@ -61,9 +67,9 @@ func (c *SvnController) HandleWebhook(ctx *gin.Context) {
 	// 使用完整的 repo 路径构建 URL（现在都通过查询参数传递）
 	var reviewURL string
 	if request.Repo == "" {
-		reviewURL = fmt.Sprintf("%s/?version=%d", c.baseURL, request.Revision)
+		reviewURL = fmt.Sprintf("%s:%s/?version=%d", c.baseURL, c.serverPort, request.Revision)
 	} else {
-		reviewURL = fmt.Sprintf("%s/?repo=%s&version=%d", c.baseURL, request.Repo, request.Revision)
+		reviewURL = fmt.Sprintf("%s:%s/?repo=%s&version=%d", c.baseURL, c.serverPort, request.Repo, request.Revision)
 	}
 
 	ctx.JSON(http.StatusOK, dto.SvnWebhookResponse{
@@ -138,6 +144,11 @@ func containsKeyword(message, keyword string) bool {
 	return len(message) >= len(keyword) && message[0:len(keyword)] == keyword
 }
 
+// containsSkipKeyword 检查消息是否包含跳过关键字
+func containsSkipKeyword(message, keyword string) bool {
+	return len(message) >= len(keyword) && message[0:len(keyword)] == keyword
+}
+
 // TriggerManualReview 手动触发 SVN 审查
 func (c *SvnController) TriggerManualReview(ctx *gin.Context) {
 	// repo 参数可选：
@@ -205,13 +216,13 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 
 	slog.Info("收到 pre-commit 审查请求", "repo", req.Repo, "author", req.Author, "message", req.Message)
 
-	if req.Message == "" || !containsKeyword(req.Message, c.keyword) {
+	if req.Message == "" || containsSkipKeyword(req.Message, c.skipKeyword) {
 		// 如果没有关键字，自动添加
 		//request.Message = fmt.Sprintf("%s %s", c.keyword, message)
 		//没有关键字，默认不处理
 		ctx.JSON(http.StatusOK, dto.PreCommitResponse{
-			Allowed: true,  // 审查出错时允许提交
-			Score:   10,    // 默认满分
+			Allowed: true, // 审查出错时允许提交
+			Score:   10,   // 默认满分
 			Report:  "无需代码审查",
 			Message: "无需代码审查，允许提交",
 		})
@@ -219,7 +230,11 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 	}
 
 	// 构建标题
-	title := fmt.Sprintf("Pre-commit 审查 - %s - %s", req.Repo)
+	messageShort := req.Message
+	if len(messageShort) > 10 {
+		messageShort = messageShort[:10] + "..."
+	}
+	title := fmt.Sprintf("审查%s-%s: %s", req.Repo, req.Author, messageShort)
 	if req.Author != "" {
 		title += fmt.Sprintf(" - %s", req.Author)
 	}
@@ -229,16 +244,16 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 	if err != nil {
 		slog.Error("代码审查失败", "error", err)
 		ctx.JSON(http.StatusOK, dto.PreCommitResponse{
-			Allowed: true,  // 审查出错时允许提交
-			Score:   10,    // 默认满分
+			Allowed: true, // 审查出错时允许提交
+			Score:   10,   // 默认满分
 			Report:  fmt.Sprintf("代码审查服务暂时不可用：%v", err),
 			Message: "审查服务异常，允许提交",
 		})
 		return
 	}
 
-	// 判定是否允许提交：评分 <= 6 分不允许
-	allowed := reviewResult.Score > 6
+	// 判定是否允许提交：评分 <= passScore 分不允许
+	allowed := reviewResult.Score > c.passScore
 
 	// 保存审查报告（无论是否有 repo，都保存）
 	var reviewURL string
@@ -253,7 +268,7 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 	filePath := c.storage.GetReviewFile(storageKey, tempRevision, ".md")
 	if err := c.storage.WriteFile(filePath, reviewResult.Report); err == nil {
 		// 构建查看 URL - 指向首页
-		reviewURL = fmt.Sprintf("%s/?repo=%s&version=%d", c.baseURL, storageKey, tempRevision)
+		reviewURL = fmt.Sprintf("%s:%d/?repo=%s&version=%d", c.baseURL, c.serverPort, storageKey, tempRevision)
 	}
 
 	// 构建响应
@@ -261,7 +276,7 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 	if allowed {
 		message = fmt.Sprintf("代码审查通过！评分：%d/10 分", reviewResult.Score)
 	} else {
-		message = fmt.Sprintf("代码审查未通过！评分：%d/10 分（要求大于6分）", reviewResult.Score)
+		message = fmt.Sprintf("代码审查未通过！评分：%d/10 分（要求大于%d分）", reviewResult.Score, c.passScore)
 	}
 
 	ctx.JSON(http.StatusOK, dto.PreCommitResponse{
@@ -278,19 +293,19 @@ func (c *SvnController) GetReviewDetail(ctx *gin.Context) {
 	// 从 URL 查询参数获取 repo 和 revision
 	repoPath := ctx.Query("repo")
 	revisionStr := ctx.Query("version")
-	
+
 	// 如果 repo 可选，如果没提供用默认
 	if repoPath == "" {
 		repoPath = "default"
 	}
-	
+
 	// 解析版本号
 	revision, err := strconv.ParseInt(revisionStr, 10, 64)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "无效的版本号"})
 		return
 	}
-	
+
 	// 获取审查报告
 	review, err := c.storage.GetReview(repoPath, revision)
 	if err != nil {
@@ -302,7 +317,7 @@ func (c *SvnController) GetReviewDetail(ctx *gin.Context) {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "获取审查报告失败"})
 		return
 	}
-	
+
 	// 构建响应
 	ctx.JSON(http.StatusOK, dto.ReviewDetailResponse{
 		RepoPath:  review.RepoPath,
