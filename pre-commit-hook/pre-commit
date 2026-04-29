@@ -1,0 +1,160 @@
+#!/bin/bash
+
+# ==============================================================================
+# SVN Pre-commit Hook - AI Code Review
+# ==============================================================================
+# Description: 在提交代码前调用 AI 进行代码审查
+#              如果评分 <= 6 分，阻止提交
+#              评分 > 6 分，允许提交
+# ==============================================================================
+
+# 配置参数
+REVIEW_API_URL="http://10.55.17.240:8080/api/reviews/svn/pre-commit"
+REPO_NAME="server"  # 修改为你的仓库名称
+TIMEOUT=30  # API 超时时间（秒）
+
+# 颜色输出
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# 获取参数
+REPOS="$1"
+TXN="$2"
+
+# 函数：输出信息
+log_info() {
+    echo -e "[INFO] $1" >&2
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
+}
+
+# 函数：获取提交信息
+get_commit_message() {
+    svnlook log -t "$TXN" "$REPOS"
+}
+
+# 函数：获取提交者
+get_author() {
+    svnlook author -t "$TXN" "$REPOS"
+}
+
+# 函数：获取变更的文件列表
+get_changed_files() {
+    svnlook changed -t "$TXN" "$REPOS"
+}
+
+# 函数：获取完整的 diff
+get_diff() {
+    svnlook diff -t "$TXN" "$REPOS"
+}
+
+# 主程序开始
+log_info "开始 AI 代码审查..."
+
+# 获取提交信息
+COMMIT_MSG=$(get_commit_message)
+AUTHOR=$(get_author)
+CHANGED=$(get_changed_files)
+DIFF_CONTENT=$(get_diff)
+
+# 检查是否有变更（空提交直接通过）
+if [ -z "$DIFF_CONTENT" ]; then
+    log_success "没有代码变更，跳过审查"
+    exit 0
+fi
+
+# 检查是否有 "[skip-review]" 标记，如果有则跳过
+if echo "$COMMIT_MSG" | grep -q "\[skip-review\]"; then
+    log_success "检测到 [skip-review] 标记，跳过代码审查"
+    exit 0
+fi
+
+# 构建 JSON 数据
+JSON_PAYLOAD=$(jq -n \
+    --arg repo "$REPO_NAME" \
+    --arg diff "$DIFF_CONTENT" \
+    --arg author "$AUTHOR" \
+    --arg message "$COMMIT_MSG" \
+    '{repo: $repo, diff: $diff, author: $author, message: $message}')
+
+# 调用 API
+log_info "调用代码审查 API (超时时间 ${TIMEOUT}s)..."
+HTTP_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+    -H "Content-Type: application/json" \
+    -d "$JSON_PAYLOAD" \
+    --max-time $TIMEOUT \
+    --connect-timeout $TIMEOUT \
+    "$REVIEW_API_URL")
+
+# 获取 curl 退出码
+CURL_EXIT=$?
+
+# 分离响应体和状态码
+HTTP_STATUS=$(echo "$HTTP_RESPONSE" | tail -n1)
+RESPONSE_BODY=$(echo "$HTTP_RESPONSE" | sed '$d')
+
+# 检查超时
+if [ $CURL_EXIT -ne 0 ]; then
+    log_error "API 调用超时或失败！"
+    if [ $CURL_EXIT -eq 28 ]; then
+        log_error "连接超时（${TIMEOUT}秒）"
+    else
+        log_error "CURL 错误码：$CURL_EXIT"
+    fi
+    log_error "代码审查服务异常，本次提交不做审查"
+    exit 0  # 允许提交，因为是服务端问题
+fi
+
+# 检查 HTTP 状态
+if [ "$HTTP_STATUS" != "200" ]; then
+    log_error "API 调用失败！HTTP 状态：$HTTP_STATUS"
+    log_info "响应内容：$RESPONSE_BODY"
+    log_error "代码审查服务异常，本次提交不做审查"
+    exit 0  # 允许提交，因为是服务端问题
+fi
+
+# 解析 JSON 响应
+ALLOWED=$(echo "$RESPONSE_BODY" | jq -r '.allowed')
+SCORE=$(echo "$RESPONSE_BODY" | jq -r '.score')
+MESSAGE=$(echo "$RESPONSE_BODY" | jq -r '.message')
+REVIEW_URL=$(echo "$RESPONSE_BODY" | jq -r '.url')
+REPORT=$(echo "$RESPONSE_BODY" | jq -r '.report')
+
+# 输出审查结果
+echo "" >&2
+echo "=========================================" >&2
+echo "           AI 代码审查结果" >&2
+echo "=========================================" >&2
+echo "" >&2
+
+if [ "$ALLOWED" = "true" ]; then
+    log_success "$MESSAGE"
+    if [ "$REVIEW_URL" != "null" ] && [ "$REVIEW_URL" != "" ]; then
+        log_info "查看详细报告：$REVIEW_URL"
+    fi
+    echo "" >&2
+    exit 0
+else
+    log_error "$MESSAGE"
+    echo "" >&2
+    echo "${YELLOW}审查报告：${NC}" >&2
+    echo "-----------------------------------------" >&2
+    echo "$REPORT" >&2
+    echo "-----------------------------------------" >&2
+    echo "" >&2
+    if [ "$REVIEW_URL" != "null" ] && [ "$REVIEW_URL" != "" ]; then
+        log_info "查看完整报告：$REVIEW_URL"
+        echo "" >&2
+    fi
+    log_error "代码未通过审查，请修复问题后重新提交！"
+    echo "" >&2
+    exit 1
+fi

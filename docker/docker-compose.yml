@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # 代码审查机器人
+  review-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: review-bot
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - SERVER_BASE_URL=http://localhost:8080
+      - SERVER_PORT=8080
+      - GITLAB_BASE_URL=http://gitlab-server:8929
+      - GITLAB_PRIVATE_TOKEN=${GITLAB_TOKEN}
+      - SVN_BASE_URL=svn://svn-server:3690
+      - SVN_KEYWORD=[review]
+      - SVN_PATH=/app/reviews
+      - LLM_BACKEND=ollama  # 或设置为 "deepseek" 使用 DeepSeek API
+      - OLLAMA_BASE_URL=http://ollama-server:11434
+      - OLLAMA_MODEL=llama3
+      - DEEPSEEK_BASE_URL=https://api.deepseek.com
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DEEPSEEK_MODEL=deepseek-v4-flash
+    volumes:
+      - ./reviews:/app/reviews
+    depends_on:
+      - ollama-server
+      - svn-server
+      - gitlab-server
+
+  # GitLab 服务器
+  gitlab-server:
+    image: 'gitlab/gitlab-ce:latest'
+    container_name: gitlab-server
+    restart: always
+    hostname: 'gitlab.example.com'
+    environment:
+      GITLAB_OMNIBUS_CONFIG: |
+        external_url 'http://localhost:8929'
+        gitlab_rails['initial_root_password'] = 'Password1234!'
+    ports:
+      - '8929:8929'
+      - '2224:22'
+    volumes:
+      - ./gitlab/config:/etc/gitlab
+      - ./gitlab/logs:/var/log/gitlab
+      - ./gitlab/data:/var/opt/gitlab
+    shm_size: '256m'
+
+  # SVN 服务器
+  svn-server:
+    image: 'garethflowers/svn-server'
+    container_name: svn-server
+    restart: always
+    ports:
+      - '3690:3690'
+    volumes:
+      - ./svn:/var/opt/svn
+
+  # Ollama 服务器
+  ollama-server:
+    image: ollama/ollama:latest
+    container_name: ollama-server
+    restart: always
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama:/root/.ollama

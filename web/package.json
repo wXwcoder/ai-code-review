@@ -1,0 +1,33 @@
+{
+  "name": "code-review-platform",
+  "version": "1.0.0",
+  "description": "Code review history viewer platform",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build-executable": "go run build.go",
+    "build-windows": "go run build.go && echo Windows executable created",
+    "build-linux": "GOOS=linux go run build.go && echo Linux executable created",
+    "build-macos": "GOOS=darwin go run build.go && echo macOS executable created"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.0.3",
+    "vite": "^4.4.5"
+  },
+  "keywords": [
+    "react",
+    "code-review",
+    "svn"
+  ],
+  "author": "",
+  "license": "MIT"
+}
