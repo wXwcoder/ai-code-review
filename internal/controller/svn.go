@@ -214,7 +214,7 @@ func (c *SvnController) PreCommitReview(ctx *gin.Context) {
 		return
 	}
 
-	slog.Info("收到 pre-commit 审查请求", "repo", req.Repo, "author", req.Author, "message", req.Message)
+	slog.Info("收到 pre-commit 审查请求", "skipKeyword", c.skipKeyword, "repo", req.Repo, "author", req.Author, "message", req.Message)
 
 	if req.Message == "" || containsSkipKeyword(req.Message, c.skipKeyword) {
 		// 如果没有关键字，自动添加

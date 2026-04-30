@@ -9,9 +9,12 @@
 # ==============================================================================
 
 # 配置参数
+ENABLE_REVIEW=true  # 是否启用代码审查：true=启用，false=禁用
 REVIEW_API_URL="http://10.55.17.240:8080/api/reviews/svn/pre-commit"
 REPO_NAME="server"  # 修改为你的仓库名称
 TIMEOUT=30  # API 超时时间（秒）
+REVIEW_EXTENSIONS=("cs" "lua" "proto" "config")  # 需要审查的文件扩展名
+IGNORE_FOLDERS=("Game.KingsMan.Model" "Game.KingsMan.MessagePack")  # 要忽略的文件夹
 
 # 颜色输出
 RED='\033[0;31m'
@@ -56,17 +59,94 @@ get_diff() {
     svnlook diff -t "$TXN" "$REPOS"
 }
 
+# 函数：检查文件路径是否包含忽略的文件夹
+is_in_ignore_folder() {
+    local filepath="$1"
+    for folder in "${IGNORE_FOLDERS[@]}"; do
+        if [[ "$filepath" == *"$folder"* ]]; then
+            return 0  # 在忽略文件夹中
+        fi
+    done
+    return 1  # 不在忽略文件夹中
+}
+
+# 函数：只获取需要审查文件的 diff
+get_reviewable_diff() {
+    local changed_files="$1"
+    local temp_diff=""
+    
+    while IFS= read -r line; do
+        # 提取文件路径（svnlook changed 格式是 "状态 路径"）
+        filepath=$(echo "$line" | awk '{print $2}')
+        if [ -n "$filepath" ]; then
+            # 检查是否在忽略文件夹中
+            if is_in_ignore_folder "$filepath"; then
+                continue
+            fi
+            # 提取文件扩展名
+            ext=$(echo "$filepath" | awk -F. '{print tolower($NF)}')
+            # 检查扩展名是否在审查列表中
+            for review_ext in "${REVIEW_EXTENSIONS[@]}"; do
+                if [ "$ext" = "$review_ext" ]; then
+                    # 获取单个文件的 diff 并追加
+                    file_diff=$(svnlook diff -t "$TXN" "$REPOS" "$filepath" 2>/dev/null)
+                    if [ -n "$file_diff" ]; then
+                        temp_diff+="$file_diff"$'\n'
+                    fi
+                    break
+                fi
+            done
+        fi
+    done <<< "$changed_files"
+    
+    echo -e "$temp_diff"
+}
+
+# 函数：检查是否有需要审查的文件
+has_reviewable_files() {
+    local changed_files="$1"
+    local has_files=false
+    
+    while IFS= read -r line; do
+        # 提取文件路径（svnlook changed 格式是 "状态 路径"）
+        filepath=$(echo "$line" | awk '{print $2}')
+        if [ -n "$filepath" ]; then
+            # 检查是否在忽略文件夹中
+            if is_in_ignore_folder "$filepath"; then
+                continue
+            fi
+            # 提取文件扩展名
+            ext=$(echo "$filepath" | awk -F. '{print tolower($NF)}')
+            # 检查扩展名是否在审查列表中
+            for review_ext in "${REVIEW_EXTENSIONS[@]}"; do
+                if [ "$ext" = "$review_ext" ]; then
+                    has_files=true
+                    break 2  # 跳出两层循环
+                fi
+            done
+        fi
+    done <<< "$changed_files"
+    
+    [ "$has_files" = true ]
+}
+
 # 主程序开始
 log_info "开始 AI 代码审查..."
+
+# 检查是否启用审查
+if [ "$ENABLE_REVIEW" != "true" ]; then
+    log_success "代码审查已禁用，跳过审查"
+    exit 0
+fi
 
 # 获取提交信息
 COMMIT_MSG=$(get_commit_message)
 AUTHOR=$(get_author)
 CHANGED=$(get_changed_files)
-DIFF_CONTENT=$(get_diff)
+FULL_DIFF=$(get_diff)
 
 # 检查是否有变更（空提交直接通过）
-if [ -z "$DIFF_CONTENT" ]; then
+if [ -z "$FULL_DIFF" ]; then
     log_success "没有代码变更，跳过审查"
     exit 0
 fi
@@ -76,6 +156,15 @@ if echo "$COMMIT_MSG" | grep -q "\[skip-review\]"; then
     log_success "检测到 [skip-review] 标记，跳过代码审查"
     exit 0
 fi
+
+# 检查是否有需要审查的文件
+if ! has_reviewable_files "$CHANGED"; then
+    log_success "没有需要审查的文件（仅审查 *.cs, *.lua, *.proto, *.config，忽略 Game.KingsMan.Model 和 Game.KingsMan.MessagePack），跳过代码审查"
+    exit 0
+fi
+
+# 只获取需要审查文件的 diff
+DIFF_CONTENT=$(get_reviewable_diff "$CHANGED")
 
 # 构建 JSON 数据
 JSON_PAYLOAD=$(jq -n \
